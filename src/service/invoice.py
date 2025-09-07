@@ -59,7 +59,6 @@ async def read_and_save_invoice(request: Request, pdf_file: bytes) -> Invoice:
     )
     invoice_dict['json_file_uri'] = json_gcs_path
 
-    db: Session = next(get_db())
     with next(get_db()) as db:
         try:
             log.info("Salvando nota fiscal no banco de dados")
@@ -115,4 +114,4 @@ async def update_invoice_fields(request: Request, invoice_id: int, invoice_data:
         request=request
     )
 
-    return updated_data
+    return json.loads(json.dumps(updated_data, default=str))
