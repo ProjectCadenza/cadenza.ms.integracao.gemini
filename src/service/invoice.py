@@ -11,6 +11,7 @@ from src.service.gcs import upload_to_gcs
 from src.service.audit_log import log_audit
 from src.utils.colored_logger import log
 from fastapi import Request
+from fastapi.encoders import jsonable_encoder
 
 GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME")
 
@@ -59,34 +60,36 @@ async def read_and_save_invoice(request: Request, pdf_file: bytes) -> Invoice:
     invoice_dict['json_file_uri'] = json_gcs_path
 
     db: Session = next(get_db())
+    with next(get_db()) as db:
+        try:
+            log.info("Salvando nota fiscal no banco de dados")
+            invoice_db = InvoiceDB(**invoice_dict)
+            
+            if invoice_pydantic.products:
+                for p_pydantic in invoice_pydantic.products:
+                    p_db = ProductDB(**p_pydantic.model_dump())
+                    invoice_db.products.append(p_db)
 
-    try:
-        log.info("Salvando nota fiscal no banco de dados")
-        invoice_db = InvoiceDB(**invoice_dict)
+            db.add(invoice_db)
+            db.commit()
+            db.refresh(invoice_db)
+
+            invoice_dict['id'] = invoice_db.id
+
+            log_audit(
+                db=db,
+                invoice=invoice_db,
+                request=request
+            )
+
+            return invoice_dict
         
-        if invoice_pydantic.products:
-            for p_pydantic in invoice_pydantic.products:
-                p_db = ProductDB(**p_pydantic.model_dump())
-                invoice_db.products.append(p_db)
-
-        db.add(invoice_db)
-        db.commit()
-        db.refresh(invoice_db)
-
-        log_audit(
-            db=db,
-            invoice=invoice_db,
-            request=request
-        )
-
-        return invoice_pydantic.model_dump()
-    
-    except Exception as e:
-        db.rollback()
-        raise e
-    
-    finally:
-        db.close()
+        except Exception as e:
+            db.rollback()
+            raise e
+        
+        finally:
+            db.close()
 
 async def update_invoice_fields(request: Request, invoice_id: int, invoice_data: InvoicePatchRequest) -> dict:
     db: Session = next(get_db())
