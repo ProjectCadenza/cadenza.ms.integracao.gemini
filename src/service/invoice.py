@@ -1,14 +1,18 @@
+import os, json
 from src.model.invoice import Invoice
 from pydantic_ai import Agent, BinaryContent
 from src.model.orm import InvoiceDB, ProductDB
-from dotenv import load_dotenv
 from src.config.database import get_db
 from sqlalchemy.orm import Session
 from fastapi import HTTPException, status
 from src.model.orm import InvoiceDB
 from src.dataclass.invoice import InvoicePatchRequest
+from src.service.gcs import upload_to_gcs
+from src.service.audit_log import log_audit
+from src.utils.colored_logger import log
+from fastapi import Request
 
-load_dotenv()
+GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME")
 
 invoice_agent = Agent(
     model='google-gla:gemini-2.5-flash',
@@ -22,29 +26,60 @@ invoice_agent = Agent(
     )
 )
 
-async def read_and_save_invoice(pdf_file: bytes) -> Invoice:
+async def read_and_save_invoice(request: Request, pdf_file: bytes) -> Invoice:
+    request_id = request.state.request_id
+    log.info(f"Lendo nota fiscal: {request_id}")
+
+    
+    raw_gcs_path = upload_to_gcs(
+        file_bytes=pdf_file,
+        bucket_name=GCS_BUCKET_NAME,
+        request_id=request_id,
+        file_ext="pdf"
+    )
+
     invoice_data = await invoice_agent.run(
         [
             BinaryContent(data=pdf_file, media_type='application/pdf')
         ]
     )
     invoice_pydantic: Invoice = invoice_data.output
+    invoice_dict = invoice_pydantic.model_dump(exclude={'products'})
+    invoice_dict['raw_file_uri'] = raw_gcs_path
+
+    json_data = json.dumps(invoice_pydantic.model_dump())
+    file_bytes = json_data.encode('utf-8') 
+
+    json_gcs_path = upload_to_gcs(
+        file_bytes=file_bytes,
+        bucket_name=GCS_BUCKET_NAME,
+        request_id=request_id,
+        file_ext="json"
+    )
+    invoice_dict['json_file_uri'] = json_gcs_path
 
     db: Session = next(get_db())
 
     try:
-        new_invoice_db = InvoiceDB(**invoice_pydantic.model_dump(exclude={'products'}))
+        log.info("Salvando nota fiscal no banco de dados")
+        invoice_db = InvoiceDB(**invoice_dict)
         
         if invoice_pydantic.products:
             for p_pydantic in invoice_pydantic.products:
                 p_db = ProductDB(**p_pydantic.model_dump())
-                new_invoice_db.products.append(p_db)
+                invoice_db.products.append(p_db)
 
-        db.add(new_invoice_db)
+        db.add(invoice_db)
         db.commit()
-        db.refresh(new_invoice_db)
+        db.refresh(invoice_db)
 
-        return invoice_pydantic
+        log_audit(
+            db=db,
+            invoice=invoice_db,
+            request=request
+        )
+
+        return invoice_pydantic.model_dump()
     
     except Exception as e:
         db.rollback()
@@ -53,22 +88,28 @@ async def read_and_save_invoice(pdf_file: bytes) -> Invoice:
     finally:
         db.close()
 
-def update_invoice_fields(invoice_id: int, invoice_data: InvoicePatchRequest) -> InvoiceDB:
+async def update_invoice_fields(request: Request, invoice_id: int, invoice_data: InvoicePatchRequest) -> dict:
     db: Session = next(get_db())
-    db_invoice = db.query(InvoiceDB).filter(InvoiceDB.id == invoice_id).first()
+    invoice_db = db.query(InvoiceDB).filter(InvoiceDB.id == invoice_id).first()
 
-    if not db_invoice:
+    if not invoice_db:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Nota fiscal com ID {invoice_id} não encontrada."
         )
 
-    update_data = invoice_data.model_dump(exclude_unset=True)
+    updated_data = invoice_data.model_dump(exclude_unset=True)
 
-    for key, value in update_data.items():
-        setattr(db_invoice, key, value)
+    for key, value in updated_data.items():
+        setattr(invoice_db, key, value)
 
     db.commit()
-    db.refresh(db_invoice)
+    db.refresh(invoice_db)
 
-    return update_data
+    log_audit(
+        db=db,
+        invoice=invoice_db,
+        request=request
+    )
+
+    return updated_data
