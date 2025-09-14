@@ -5,10 +5,12 @@ import re
 null_values = ["null", "n/a", "none", ""]
 
 class Product(BaseModel):
-    description: Optional[str] = Field(None, description="Product or service description")
-    quantity: Optional[float] = Field(None, description="Quantity of the item")
-    unit_price: Optional[float] = Field(None, description="Price per unit")
-    total_amount: Optional[float] = Field(None, description="Total amount for this line item")
+    id: Optional[int] = Field(None, description="ID sequencial e incremental do produto dentro da nota fiscal")
+    
+    description: Optional[str] = Field(None, description="Descrição do produto ou serviço")
+    quantity: Optional[float] = Field(None, description="Quantidade do item")
+    unit_price: Optional[float] = Field(None, description="Preço por unidade")
+    total_amount: Optional[float] = Field(None, description="Valor total para este item da linha")
     
     @field_validator('*', mode='before')
     def null_to_none(cls, value: Any):
@@ -17,23 +19,23 @@ class Product(BaseModel):
         return value
 
 class Invoice(BaseModel):
-    invoice_number: Optional[str] = Field(None, description="Invoice number")
-    due_date: Optional[str] = Field(None, description="Due date of the invoice (YYYY-MM-DD)")
-    issue_date: Optional[str] = Field(None, description="Date the invoice was issued (YYYY-MM-DD)")
+    invoice_number: Optional[str] = Field(None, description="Número da nota fiscal")
+    due_date: Optional[str] = Field(None, description="Data de vencimento da nota (YYYY-MM-DD)")
+    issue_date: Optional[str] = Field(None, description="Data de emissão da nota (YYYY-MM-DD)")
     
-    supplier_cnpj: Optional[str] = Field(None, description="CNPJ of the service provider")
-    supplier_name: Optional[str] = Field(None, description="Name of the service provider")
-    customer_cnpj: Optional[str] = Field(None, description="CNPJ or CPF of the service recipient")
-    customer_name: Optional[str] = Field(None, description="Name of the service recipient")
+    supplier_cnpj: Optional[str] = Field(None, description="CNPJ do fornecedor do serviço")
+    supplier_name: Optional[str] = Field(None, description="Nome do fornecedor do serviço")
+    customer_cnpj: Optional[str] = Field(None, description="CNPJ ou CPF do cliente")
+    customer_name: Optional[str] = Field(None, description="Nome do cliente")
     
-    total_amount: Optional[float] = Field(None, description="Total amount of the invoice")
-    discount_amount: Optional[float] = Field(None, description="Total discount applied")
-    tax_amount: Optional[float] = Field(None, description="Total tax amount")
+    total_amount: Optional[float] = Field(None, description="Valor total da nota fiscal")
+    discount_amount: Optional[float] = Field(None, description="Desconto total aplicado")
+    tax_amount: Optional[float] = Field(None, description="Valor total de impostos")
     
-    products: Optional[List[Product]] = Field(None, description="List of products or services")
+    products: Optional[List[Product]] = Field(None, description="Lista de produtos ou serviços")
     
-    access_key: Optional[str] = Field(None, description="Access key of the electronic invoice")
-    fiscal_protocol: Optional[str] = Field(None, description="Protocol number of the fiscal authority")
+    access_key: Optional[str] = Field(None, description="Chave de acesso da nota fiscal eletrônica")
+    fiscal_protocol: Optional[str] = Field(None, description="Número de protocolo da autoridade fiscal")
     
     @field_validator('supplier_cnpj', 'customer_cnpj', mode='before')
     def remove_non_numeric_chars(cls, value: Any):

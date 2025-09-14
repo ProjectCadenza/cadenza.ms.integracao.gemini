@@ -1,21 +1,32 @@
-from sqlalchemy.orm import Session
-from src.model.orm import AuditLog, InvoiceDB
 from fastapi import Request
+from datetime import datetime, timezone
+from src.config.firestore import firestore_db
 
-def log_audit(db: Session, request: Request, invoice: InvoiceDB):
+def create_audit_log(
+    request: Request,
+    action: str,
+    status: str,
+    invoice_id: str = None,
+    details: dict = None
+):
+    """
+    Cria um documento de log na coleção 'audit_logs' do Firestore.
+    """
     try:
-        audit = AuditLog(
-            request_id=request.state.request_id,
-            action=request.method,
-            invoice_id=invoice.id,
-            request_path=request.url.path
-        )
-        db.add(audit)
-        db.commit()
+        log_entry = {
+            "requestId": str(request.state.request_id),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "action": action,
+            "status": status,
+            "invoiceId": invoice_id,
+            "details": details or {},
+            "actor": {
+                "userId": getattr(request.state, "user_id", "system"), 
+                "ipAddress": request.client.host
+            }
+        }
+
+        firestore_db.collection('audit_logs').add(log_entry)
 
     except Exception as e:
-        db.rollback()
-        raise e
-    
-    finally:
-        db.close()
+        print(f"ERRO CRÍTICO: Falha ao gravar log de auditoria: {e}")

@@ -1,19 +1,14 @@
-import os, json
+import os,json, traceback
 from src.model.invoice import Invoice
-from pydantic_ai import Agent, BinaryContent
-from src.model.orm import InvoiceDB, ProductDB
-from src.config.database import get_db
-from sqlalchemy.orm import Session
-from fastapi import HTTPException, status
-from src.model.orm import InvoiceDB
 from src.dataclass.invoice import InvoicePatchRequest
-from src.service.gcs import upload_to_gcs
-from src.service.audit_log import log_audit
-from src.utils.colored_logger import log
-from fastapi import Request
-from fastapi.encoders import jsonable_encoder
+from pydantic_ai import Agent, BinaryContent
+from src.config.firestore import firestore_db, bucket 
+from fastapi import HTTPException, status, Request
+from datetime import datetime, timezone
 
-GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME")
+from src.service.audit_log import create_audit_log
+from src.service.firebase_storage import upload_to_firebase_storage 
+from src.utils.colored_logger import log
 
 invoice_agent = Agent(
     model='google-gla:gemini-2.5-flash',
@@ -27,91 +22,129 @@ invoice_agent = Agent(
     )
 )
 
-async def read_and_save_invoice(request: Request, pdf_file: bytes) -> Invoice:
-    request_id = request.state.request_id
-    log.info(f"Lendo nota fiscal: {request_id}")
-
+async def read_and_save_invoice_firestore(request: Request, pdf_file: bytes) -> dict:
+    """
+    Processa um PDF de nota fiscal e salva os dados e o arquivo no Firebase.
+    """
+    # Log: Início do processamento
+    create_audit_log(request, "INVOICE_PROCESSING_STARTED", "IN_PROGRESS")
     
-    raw_gcs_path = upload_to_gcs(
-        file_bytes=pdf_file,
-        bucket_name=GCS_BUCKET_NAME,
-        request_id=request_id,
-        file_ext="pdf"
-    )
+    try:
+        log.info(f"Lendo nota fiscal (Firestore): {request.state.request_id}")
 
-    invoice_data = await invoice_agent.run(
-        [
-            BinaryContent(data=pdf_file, media_type='application/pdf')
-        ]
-    )
-    invoice_pydantic: Invoice = invoice_data.output
-    invoice_dict = invoice_pydantic.model_dump(exclude={'products'})
-    invoice_dict['raw_file_uri'] = raw_gcs_path
-
-    json_data = json.dumps(invoice_pydantic.model_dump())
-    file_bytes = json_data.encode('utf-8') 
-
-    json_gcs_path = upload_to_gcs(
-        file_bytes=file_bytes,
-        bucket_name=GCS_BUCKET_NAME,
-        request_id=request_id,
-        file_ext="json"
-    )
-    invoice_dict['json_file_uri'] = json_gcs_path
-
-    with next(get_db()) as db:
-        try:
-            log.info("Salvando nota fiscal no banco de dados")
-            invoice_db = InvoiceDB(**invoice_dict)
-            
-            if invoice_pydantic.products:
-                for p_pydantic in invoice_pydantic.products:
-                    p_db = ProductDB(**p_pydantic.model_dump())
-                    invoice_db.products.append(p_db)
-
-            db.add(invoice_db)
-            db.commit()
-            db.refresh(invoice_db)
-
-            invoice_dict['id'] = invoice_db.id
-
-            log_audit(
-                db=db,
-                invoice=invoice_db,
-                request=request
-            )
-
-            return invoice_dict
-        
-        except Exception as e:
-            db.rollback()
-            raise e
-        
-        finally:
-            db.close()
-
-async def update_invoice_fields(request: Request, invoice_id: int, invoice_data: InvoicePatchRequest) -> dict:
-    db: Session = next(get_db())
-    invoice_db = db.query(InvoiceDB).filter(InvoiceDB.id == invoice_id).first()
-
-    if not invoice_db:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Nota fiscal com ID {invoice_id} não encontrada."
+        # 1. Upload do PDF para o Firebase Storage
+        raw_file_path = upload_to_firebase_storage(
+            file_bytes=pdf_file,
+            request_id=str(request.state.request_id),
+            file_ext="pdf"
         )
 
-    updated_data = invoice_data.model_dump(exclude_unset=True)
+        # 2. Extração de dados com IA
+        invoice_data = await invoice_agent.run(
+            [BinaryContent(data=pdf_file, media_type='application/pdf')]
+        )
+        invoice_pydantic: Invoice = invoice_data.output
+        if invoice_pydantic.products:
+            for index, product in enumerate(invoice_pydantic.products):
+                product.id = index + 1
+        
+        # 3. Montagem do documento NoSQL
+        invoice_dict = invoice_pydantic.model_dump()
+        invoice_dict['raw_file_path'] = raw_file_path
+        invoice_dict['created_at'] = datetime.now(timezone.utc).isoformat()
 
-    for key, value in updated_data.items():
-        setattr(invoice_db, key, value)
+        # 4. Salvar o JSON extraído no Storage
+        json_data = json.dumps(invoice_dict, default=str).encode('utf-8')
+        json_file_path = upload_to_firebase_storage(
+            file_bytes=json_data,
+            request_id=str(request.state.request_id),
+            file_ext="json"
+        )
+        invoice_dict['json_file_path'] = json_file_path
 
-    db.commit()
-    db.refresh(invoice_db)
+        # 5. Salvar o documento no Firestore
+        log.info("Salvando nota fiscal no Firestore")
+        update_time, doc_ref = firestore_db.collection('invoices').add(invoice_dict)
+        
+        invoice_dict['id'] = doc_ref.id
 
-    log_audit(
-        db=db,
-        invoice=invoice_db,
-        request=request
-    )
+        # Log: Sucesso!
+        create_audit_log(
+            request, 
+            "INVOICE_CREATED", 
+            "SUCCESS", 
+            invoice_id=doc_ref.id,
+            details={"message": f"Nota fiscal {doc_ref.id} criada com sucesso."}
+        )
 
-    return json.loads(json.dumps(updated_data, default=str))
+        return invoice_dict
+
+    except Exception as e:
+        create_audit_log(
+            request, 
+            "INVOICE_CREATED", 
+            "FAILURE",
+            details={"error": str(e), "traceback": traceback.format_exc()}
+        )
+        log.error(f"Falha ao processar nota fiscal: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ocorreu um erro interno ao processar a nota fiscal: {e}"
+        )
+
+
+async def update_invoice_fields_firestore(request: Request, invoice_id: str, invoice_data: InvoicePatchRequest) -> dict:
+    """
+    Atualiza campos específicos de uma nota fiscal no Firestore.
+    """
+    log.info(f"Atualizando nota fiscal no Firestore: {invoice_id}")
+
+    doc_ref = firestore_db.collection('invoices').document(invoice_id)
+    
+    try:
+        invoice_doc = doc_ref.get()
+        if not invoice_doc.exists:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Nota fiscal com ID {invoice_id} não encontrada."
+            )
+
+        updated_data = invoice_data.model_dump(exclude_unset=True)
+
+        if not updated_data:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Nenhum dado válido fornecido para atualização."
+            )
+
+        updated_data['updated_at'] = datetime.now(timezone.utc).isoformat()
+        doc_ref.update(updated_data)
+
+        create_audit_log(
+            request,
+            "INVOICE_UPDATED",
+            "SUCCESS",
+            invoice_id=invoice_id,
+            details={
+                "message": "Campos da nota fiscal foram atualizados.",
+                "updated_fields": list(updated_data.keys())
+            }
+        )
+        
+        log.info(f"Nota fiscal {invoice_id} atualizada com sucesso.")
+        return updated_data
+
+    except Exception as e:
+        create_audit_log(
+            request,
+            "INVOICE_UPDATED",
+            "FAILURE",
+            invoice_id=invoice_id,
+            details={"error": str(e)}
+        )
+        if not isinstance(e, HTTPException):
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Ocorreu um erro interno ao atualizar a nota fiscal: {e}"
+            )
+        raise e
