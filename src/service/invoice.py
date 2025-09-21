@@ -4,7 +4,7 @@ from src.dataclass.invoice import InvoicePatchRequest
 from pydantic_ai import Agent, BinaryContent
 from src.config.firestore import firestore_db, bucket 
 from fastapi import HTTPException, status, Request
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 
 from src.service.audit_log import create_audit_log
 from src.service.firebase_storage import upload_to_firebase_storage 
@@ -116,9 +116,14 @@ async def update_invoice_fields_firestore(request: Request, invoice_id: str, inv
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Nenhum dado válido fornecido para atualização."
             )
+        
+        for key, value in updated_data.items():
+            if isinstance(value, (date, datetime)):
+                updated_data[key] = value.strftime("%Y-%m-%d")
 
-        updated_data['updated_at'] = datetime.now(timezone.utc).isoformat()
+        updated_data['updated_at'] = datetime.now().isoformat()
         doc_ref.update(updated_data)
+
 
         create_audit_log(
             request,
