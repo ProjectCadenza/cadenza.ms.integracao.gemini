@@ -3,7 +3,7 @@ from src.model.invoice import Invoice
 from src.dataclass.invoice import InvoicePatchRequest
 from pydantic_ai import Agent, BinaryContent
 from src.config.firestore import firestore_db, bucket 
-from fastapi import HTTPException, status, Request
+from fastapi import HTTPException, status, Request, UploadFile
 from datetime import datetime, timezone, date
 
 from src.service.audit_log import create_audit_log
@@ -22,38 +22,47 @@ invoice_agent = Agent(
     )
 )
 
-async def read_and_save_invoice_firestore(request: Request, pdf_file: bytes) -> dict:
+async def read_and_save_invoice_firestore(request: Request, pdf_file: UploadFile) -> dict:
     """
-    Processa um PDF de nota fiscal e salva os dados e o arquivo no Firebase.
+    Processa um arquivo de nota fiscal (PDF, PNG, JPEG, etc.) e salva os dados.
     """
-    # Log: Início do processamento
     create_audit_log(request, "INVOICE_PROCESSING_STARTED", "IN_PROGRESS")
     
     try:
         log.info(f"Lendo nota fiscal (Firestore): {request.state.request_id}")
 
-        # 1. Upload do PDF para o Firebase Storage
+        file_bytes = await pdf_file.read()
+        media_type = pdf_file.content_type
+        
+        if '.' in pdf_file.filename:
+            file_ext = pdf_file.filename.split('.')[-1]
+        else: 
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Ocorreu um erro interno ao processar a nota fiscal, o arquivo não possui uma extensão"
+            )
+
         raw_file_path = upload_to_firebase_storage(
-            file_bytes=pdf_file,
+            file_bytes=file_bytes,
             request_id=str(request.state.request_id),
-            file_ext="pdf"
+            file_ext=file_ext # <-- Dinâmico
         )
 
-        # 2. Extração de dados com IA
         invoice_data = await invoice_agent.run(
-            [BinaryContent(data=pdf_file, media_type='application/pdf')]
+            [BinaryContent(data=file_bytes, media_type=media_type)] # <-- Dinâmico
         )
+        
         invoice_pydantic: Invoice = invoice_data.output
         if invoice_pydantic.products:
             for index, product in enumerate(invoice_pydantic.products):
                 product.id = index + 1
         
-        # 3. Montagem do documento NoSQL
         invoice_dict = invoice_pydantic.model_dump()
         invoice_dict['raw_file_path'] = raw_file_path
         invoice_dict['created_at'] = datetime.now(timezone.utc).isoformat()
+        invoice_dict['original_filename'] = pdf_file.filename 
+        invoice_dict['original_media_type'] = media_type 
 
-        # 4. Salvar o JSON extraído no Storage
         json_data = json.dumps(invoice_dict, default=str).encode('utf-8')
         json_file_path = upload_to_firebase_storage(
             file_bytes=json_data,
@@ -62,13 +71,11 @@ async def read_and_save_invoice_firestore(request: Request, pdf_file: bytes) -> 
         )
         invoice_dict['json_file_path'] = json_file_path
 
-        # 5. Salvar o documento no Firestore
         log.info("Salvando nota fiscal no Firestore")
         update_time, doc_ref = firestore_db.collection('invoices').add(invoice_dict)
         
         invoice_dict['id'] = doc_ref.id
 
-        # Log: Sucesso!
         create_audit_log(
             request, 
             "INVOICE_CREATED", 

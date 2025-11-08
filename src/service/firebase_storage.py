@@ -25,4 +25,5 @@ def upload_to_firebase_storage(file_bytes: bytes, request_id: str, file_ext: str
     blob = bucket.blob(destination_path)
     blob.upload_from_string(file_bytes)
     log.info(f"Arquivo salvo no Firebase Storage: {destination_path}")
+    
     return destination_path
