@@ -5,9 +5,8 @@ from src.service.invoice import read_and_save_invoice_firestore, update_invoice_
 from src.model.invoice import Invoice
 from src.dataclass.invoice import InvoicePatchRequest
 from src.utils.colored_logger import log
-from src.security.app_check import verify_app_check
 
-invoice_router = APIRouter(prefix="/invoiceAgent", tags=["Invoice Agent"], dependencies=[Depends(verify_app_check)])
+invoice_router = APIRouter(prefix="/invoiceAgent", tags=["Invoice Agent"])
 
 @invoice_router.post("/readInvoice")
 async def read_invoice(request: Request, pdf_file: UploadFile = File(...)):
