@@ -2,8 +2,6 @@ from pydantic import BaseModel
 from typing import Optional, List
 from datetime import date
 
-# Modelo Pydantic para os produtos, já que eles também podem
-# ser editados e enviados na requisição de PATCH.
 class ProductPatch(BaseModel):
     id: Optional[int] = None
     description: Optional[str] = None

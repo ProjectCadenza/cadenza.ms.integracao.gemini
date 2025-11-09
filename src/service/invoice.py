@@ -68,7 +68,8 @@ async def read_and_save_invoice_firestore(request: Request, pdf_file: UploadFile
         json_file_path = upload_to_firebase_storage(
             file_bytes=json_data,
             request_id=str(request.state.request_id),
-            file_ext="json"
+            file_ext="json",
+            media_type="application/json"
         )
         invoice_dict['json_file_path'] = json_file_path
 
