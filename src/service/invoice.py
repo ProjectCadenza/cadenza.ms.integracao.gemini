@@ -45,11 +45,12 @@ async def read_and_save_invoice_firestore(request: Request, pdf_file: UploadFile
         raw_file_path = upload_to_firebase_storage(
             file_bytes=file_bytes,
             request_id=str(request.state.request_id),
-            file_ext=file_ext # <-- Dinâmico
+            file_ext=file_ext,
+            media_type=media_type
         )
 
         invoice_data = await invoice_agent.run(
-            [BinaryContent(data=file_bytes, media_type=media_type)] # <-- Dinâmico
+            [BinaryContent(data=file_bytes, media_type=media_type)] 
         )
         
         invoice_pydantic: Invoice = invoice_data.output

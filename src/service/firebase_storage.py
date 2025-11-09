@@ -5,7 +5,7 @@ from datetime import datetime
 from src.utils.colored_logger import log
 from fastapi import HTTPException
  
-def upload_to_firebase_storage(file_bytes: bytes, request_id: str, file_ext: str) -> str:
+def upload_to_firebase_storage(file_bytes: bytes, request_id: str, file_ext: str, media_type: str) -> str:
     """
     Faz o upload de um arquivo (em bytes) para um bucket do Google Cloud Storage.
 
@@ -23,7 +23,7 @@ def upload_to_firebase_storage(file_bytes: bytes, request_id: str, file_ext: str
     destination_path = f"invoices/{request_id}/file.{file_ext}"
 
     blob = bucket.blob(destination_path)
-    blob.upload_from_string(file_bytes)
+    blob.upload_from_string(file_bytes, content_type=media_type)
     log.info(f"Arquivo salvo no Firebase Storage: {destination_path}")
     
     return destination_path
