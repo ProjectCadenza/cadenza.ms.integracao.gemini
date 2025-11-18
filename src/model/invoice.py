@@ -8,11 +8,9 @@ class Product(BaseModel):
     id: Optional[int] = Field(None, description="ID sequencial e incremental do produto dentro da nota fiscal")
     description: Optional[str] = Field(None, description="Descrição do produto ou serviço")
     
-    # Mudei a ordem aqui: quantity e total_amount vêm antes para estarem disponíveis no validador de unit_price
     quantity: Optional[float] = Field(None, description="Quantidade do item")
     total_amount: Optional[float] = Field(None, description="Valor total para este item da linha")
     
-    # unit_price agora é o último para poder ler os dois acima
     unit_price: Optional[float] = Field(None, description="Preço por unidade")
 
     @field_validator('*', mode='before')
@@ -25,11 +23,10 @@ class Product(BaseModel):
     @field_validator("unit_price", mode="after")
     @classmethod
     def compute_unit_price(cls, v, info: ValidationInfo):
-        # Acessamos os dados através de info.data
+
         quantity = info.data.get("quantity")
         total_amount = info.data.get("total_amount")
 
-        # Lógica de cálculo: se não tem preço, mas tem total e qtd, calcula
         if v is None and quantity and total_amount:
             try:
                 return total_amount / quantity
