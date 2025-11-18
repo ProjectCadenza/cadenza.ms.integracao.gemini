@@ -17,6 +17,16 @@ class Product(BaseModel):
         if isinstance(value, str) and value.lower() in null_values:
             return None
         return value
+        
+    @field_validator("unit_price", mode="after")
+    def compute_unit_price(cls, v, values):
+        quantity = values.get("quantity")
+        total_amount = values.get("total_amount")
+
+        if v is None and quantity and total_amount:
+            return total_amount / quantity
+        
+        return v
 
 class Invoice(BaseModel):
     invoice_number: Optional[str] = Field(None, description="Número da nota fiscal")
